@@ -12,6 +12,8 @@ const state = {
   ownerByPlayer: new Map(),
   currentRosterId: null,
   picks: [],
+  tradeHistory: [],
+  managerProfiles: new Map(),
   lastResults: []
 };
 
@@ -63,18 +65,21 @@ async function importLeague(leagueId) {
     state.league = league;
     const format = leagueFormat();
 
-    const [rosters, users, tradedPicks, values] = await Promise.all([
+    const [rosters, users, tradedPicks, values, history] = await Promise.all([
       getJson(`/api/league?id=${leagueId}&resource=rosters`),
       getJson(`/api/league?id=${leagueId}&resource=users`),
       getJson(`/api/league?id=${leagueId}&resource=traded_picks`),
-      getJson(`/api/values?numQbs=${format.numQbs}&numTeams=${league.total_rosters || rosters?.length || 12}&ppr=${format.ppr}`)
+      getJson(`/api/values?numQbs=${format.numQbs}&numTeams=${league.total_rosters || 12}&ppr=${format.ppr}`),
+      getJson(`/api/history?id=${leagueId}`).catch(() => ({trades: []}))
     ]);
 
     state.rosters = rosters || [];
     state.users = users || [];
     state.tradedPicks = tradedPicks || [];
     state.values = values || [];
+    state.tradeHistory = history?.trades || [];
     indexData();
+    buildManagerProfiles();
     renderImportedLeague();
 
     $("importMessage").textContent = "League imported successfully.";
@@ -213,6 +218,9 @@ function refreshTeamContext() {
 
   populateTargetPlayers();
   populateShopAssets();
+  populateUntouchables();
+  populateMustReceive();
+  renderManagerTendencies();
 }
 
 function populateTargetPlayers(query = "") {
@@ -230,13 +238,242 @@ function populateTargetPlayers(query = "") {
   ).join("");
 }
 
+
 function populateShopAssets() {
   const players = rosterPlayers(state.currentRosterId).sort((a,b) => b.value-a.value);
-  const picks = state.picks.filter(p => p.ownerRosterId === state.currentRosterId);
-  $("shopAsset").innerHTML = [
-    ...players.map(p => `<option value="player:${p.id}">${escapeHtml(p.name)} · ${p.position} · ${fmtValue(p.value)}</option>`),
-    ...picks.map((p,i) => `<option value="pick:${state.picks.indexOf(p)}">${escapeHtml(p.shortName)} · ${fmtValue(p.value)}</option>`)
-  ].join("");
+
+  $("shopAssetList").innerHTML = players.map(p => `
+    <label class="asset-check">
+      <input type="checkbox" class="shop-player-check" value="${p.id}">
+      <span class="asset-check-main">
+        <span class="asset-check-name">${escapeHtml(p.name)}</span>
+        <span class="asset-check-meta">${p.position}${p.team ? ` · ${escapeHtml(p.team)}` : ""}</span>
+      </span>
+      <span class="asset-check-value">${fmtValue(p.value)}</span>
+    </label>
+  `).join("");
+
+  document.querySelectorAll(".shop-player-check").forEach(el => {
+    el.addEventListener("change", updateSelectedAssetSummary);
+  });
+
+  updateSelectedAssetSummary();
+}
+
+function updateSelectedAssetSummary() {
+  const selected = selectedShopAssets();
+  const summary = $("selectedAssetSummary");
+  if (!summary) return;
+
+  if (!selected.length) {
+    summary.textContent = "No players selected";
+    return;
+  }
+
+  const total = selected.reduce((sum, p) => sum + (p.value || 0), 0);
+  summary.textContent = `${selected.length} player${selected.length === 1 ? "" : "s"} selected · ${fmtValue(total)} raw value`;
+}
+
+
+function populateUntouchables() {
+  const players = rosterPlayers(state.currentRosterId).sort((a,b)=>b.value-a.value);
+  const existing = new Set(
+    [...document.querySelectorAll(".untouchable-check:checked")].map(el => el.value)
+  );
+
+  $("untouchableList").innerHTML = players.map(p => `
+    <label class="asset-check">
+      <input type="checkbox" class="untouchable-check" value="${p.id}" ${existing.has(p.id) ? "checked" : ""}>
+      <span class="asset-check-main">
+        <span class="asset-check-name">${escapeHtml(p.name)}</span>
+        <span class="asset-check-meta">${p.position}${p.team ? ` · ${escapeHtml(p.team)}` : ""}</span>
+      </span>
+      <span class="asset-check-value">${fmtValue(p.value)}</span>
+    </label>
+  `).join("");
+}
+
+function untouchableIds() {
+  return new Set(
+    [...document.querySelectorAll(".untouchable-check:checked")].map(el => el.value)
+  );
+}
+
+function populateMustReceive() {
+  const current = $("mustReceive")?.value || "";
+  const options = [];
+
+  for (const roster of state.rosters) {
+    const rid = Number(roster.roster_id);
+    if (rid === state.currentRosterId) continue;
+    for (const p of rosterPlayers(rid).sort((a,b)=>b.value-a.value)) {
+      options.push({
+        value: `player:${p.id}`,
+        label: `${p.name} · ${p.position} · ${ownerName(roster)}`
+      });
+    }
+  }
+
+  if ($("allowPicks")?.checked) {
+    for (const p of state.picks.filter(p=>p.ownerRosterId !== state.currentRosterId)) {
+      options.push({
+        value: `pick:${state.picks.indexOf(p)}`,
+        label: `${p.shortName} · ${ownerName(state.rosterById.get(p.ownerRosterId))}`
+      });
+    }
+  }
+
+  $("mustReceive").innerHTML =
+    `<option value="">No required return asset</option>` +
+    options.slice(0, 500).map(o =>
+      `<option value="${o.value}" ${o.value === current ? "selected" : ""}>${escapeHtml(o.label)}</option>`
+    ).join("");
+}
+
+function requiredReceiveAsset() {
+  const raw = $("mustReceive")?.value;
+  if (!raw) return null;
+  const [kind, id] = raw.split(":");
+  if (kind === "player") return {...getPlayer(id), type:"player"};
+  if (kind === "pick") return state.picks[Number(id)] || null;
+  return null;
+}
+
+function buildManagerProfiles() {
+  state.managerProfiles = new Map();
+
+  for (const roster of state.rosters) {
+    state.managerProfiles.set(Number(roster.roster_id), {
+      trades: 0,
+      picksReceived: 0,
+      picksSent: 0,
+      playersReceived: 0,
+      playersSent: 0,
+      youthReceived: 0,
+      veteransReceived: 0
+    });
+  }
+
+  for (const tx of state.tradeHistory) {
+    for (const ridRaw of tx.roster_ids || []) {
+      const rid = Number(ridRaw);
+      if (!state.managerProfiles.has(rid)) continue;
+      state.managerProfiles.get(rid).trades++;
+    }
+
+    for (const [pid, ridRaw] of Object.entries(tx.adds || {})) {
+      const rid = Number(ridRaw);
+      const profile = state.managerProfiles.get(rid);
+      if (!profile) continue;
+      profile.playersReceived++;
+      const p = getPlayer(pid);
+      if (p.age != null && p.age <= 24) profile.youthReceived++;
+      if (p.age != null && p.age >= 28) profile.veteransReceived++;
+    }
+
+    for (const [pid, ridRaw] of Object.entries(tx.drops || {})) {
+      const rid = Number(ridRaw);
+      const profile = state.managerProfiles.get(rid);
+      if (profile) profile.playersSent++;
+    }
+
+    for (const pick of tx.draft_picks || []) {
+      const newOwner = Number(pick.owner_id);
+      const oldOwner = Number(pick.previous_owner_id ?? pick.roster_id);
+      if (state.managerProfiles.has(newOwner)) state.managerProfiles.get(newOwner).picksReceived++;
+      if (state.managerProfiles.has(oldOwner)) state.managerProfiles.get(oldOwner).picksSent++;
+    }
+  }
+}
+
+function managerPreference(rosterId) {
+  const p = state.managerProfiles.get(Number(rosterId));
+  if (!p || p.trades < 2) return "unknown";
+  if (p.picksReceived >= p.playersReceived * .55) return "picks";
+  if (p.youthReceived > p.veteransReceived * 1.5) return "youth";
+  if (p.veteransReceived > p.youthReceived * 1.5) return "veterans";
+  return "balanced";
+}
+
+function renderManagerTendencies() {
+  const cards = [];
+  for (const roster of state.rosters) {
+    const rid = Number(roster.roster_id);
+    if (rid === state.currentRosterId) continue;
+    const p = state.managerProfiles.get(rid) || {};
+    const pref = managerPreference(rid);
+    cards.push(`
+      <div class="tendency-card">
+        <h3>${escapeHtml(ownerName(roster))}</h3>
+        <p>${p.trades || 0} historical trade${p.trades === 1 ? "" : "s"} analyzed.</p>
+        <div class="tendency-tags">
+          <span class="tendency-tag">${pref === "unknown" ? "Limited sample" : `Leans ${pref}`}</span>
+          ${p.picksReceived ? `<span class="tendency-tag">${p.picksReceived} picks acquired</span>` : ""}
+          ${p.playersReceived ? `<span class="tendency-tag">${p.playersReceived} players acquired</span>` : ""}
+        </div>
+      </div>
+    `);
+  }
+
+  $("managerTendencies").innerHTML = cards.join("") || `<div class="muted">No historical trades found.</div>`;
+  $("historyStatus").textContent = state.tradeHistory.length
+    ? `${state.tradeHistory.length} trades analyzed`
+    : "No history found";
+}
+
+function pickQualityMultiplier(pick) {
+  const mode = $("pickQuality")?.value || "auto";
+  let quality = mode;
+
+  if (mode === "auto") {
+    const roster = state.rosterById.get(pick.originalRosterId);
+    const wins = Number(roster?.settings?.wins || 0);
+    const losses = Number(roster?.settings?.losses || 0);
+    const total = wins + losses;
+    const pct = total ? wins / total : .5;
+    quality = pct < .38 ? "early" : pct > .62 ? "late" : "mid";
+  }
+
+  if (quality === "early") return 1.18;
+  if (quality === "late") return .84;
+  return 1.0;
+}
+
+function complexityLimit() {
+  const c = $("complexity")?.value || "normal";
+  if (c === "simple") return 2;
+  if (c === "blockbuster") return 4;
+  return 3;
+}
+
+function tradeStyleBonus(asset, rosterId, direction="receive") {
+  const style = $("tradeStyle")?.value || "balanced";
+  let mult = 1;
+
+  if (asset.type === "pick") {
+    if (style === "retool") mult *= 1.12;
+    if (style === "winnow") mult *= .92;
+    if (style === "tierup") mult *= .95;
+    if (style === "tierdown") mult *= 1.05;
+    return mult;
+  }
+
+  if (style === "winnow") {
+    if (asset.age != null && asset.age >= 26 && asset.value >= 2500) mult *= 1.06;
+    if (asset.age != null && asset.age <= 22) mult *= .97;
+  }
+  if (style === "retool") {
+    if (asset.age != null && asset.age <= 24) mult *= 1.08;
+    if (asset.age != null && asset.age >= 29) mult *= .90;
+  }
+  if (style === "tierup") {
+    if (asset.value >= 6500) mult *= 1.09;
+    if (asset.value < 2500) mult *= .94;
+  }
+  if (style === "tierdown") {
+    if (asset.value >= 1800 && asset.value <= 5500) mult *= 1.04;
+  }
+  return mult;
 }
 
 function assessNeeds(rosterId) {
@@ -268,9 +505,11 @@ function inferStarterTargets() {
 function adjustedValue(asset, rosterId, direction = "receive") {
   let v = asset.value || 0;
   if (asset.type === "pick") {
+    v *= pickQualityMultiplier(asset);
     const strategy = rosterId === state.currentRosterId ? $("strategy").value : inferTeamWindow(rosterId);
     if (strategy === "rebuild") v *= 1.12;
     if (strategy === "contender") v *= .93;
+    v *= tradeStyleBonus(asset, rosterId, direction);
     return v;
   }
 
@@ -285,6 +524,7 @@ function adjustedValue(asset, rosterId, direction = "receive") {
   } else if (strategy === "contender") {
     if (asset.value >= 4500) v *= 1.04;
   }
+  v *= tradeStyleBonus(asset, rosterId, direction);
   return v;
 }
 
@@ -304,9 +544,12 @@ function assetLabel(a) {
 
 function myTradeableAssets(excludeIds = []) {
   const protect = $("protectElite").checked;
+  const untouchable = untouchableIds();
+  const mandatory = new Set(selectedShopAssets().map(p=>p.id));
   const players = rosterPlayers(state.currentRosterId)
     .filter(p => !excludeIds.includes(p.id))
-    .filter(p => !(protect && p.value >= 8000))
+    .filter(p => !untouchable.has(p.id) || mandatory.has(p.id))
+    .filter(p => !(protect && p.value >= 8000 && !mandatory.has(p.id)))
     .map(p => ({...p, type:"player"}));
 
   const picks = $("allowPicks").checked
@@ -319,7 +562,9 @@ function otherTradeableAssets(rosterId, excludeIds = []) {
   const players = rosterPlayers(rosterId)
     .filter(p => !excludeIds.includes(p.id))
     .map(p => ({...p, type:"player"}));
-  const picks = state.picks.filter(p => p.ownerRosterId === rosterId);
+  const picks = $("allowPicks").checked
+    ? state.picks.filter(p => p.ownerRosterId === rosterId)
+    : [];
   return [...players, ...picks];
 }
 
@@ -337,6 +582,120 @@ function combinations(items, maxSize = 3) {
     }
   }
   return out;
+}
+
+
+function packageHasPick(pkg) {
+  return pkg.some(a => a.type === "pick");
+}
+
+function pickTargetShare() {
+  if (!$("allowPicks").checked) return 0;
+  const mix = $("pickMix")?.value || "balanced";
+  if (mix === "active") return 0.65;
+  if (mix === "players") return 0.20;
+  return 0.42;
+}
+
+function creativeCombinations(items, maxSize = 3, targetValue = 0) {
+  const players = items.filter(a => a.type !== "pick").sort((a,b)=>b.value-a.value);
+  const picks = items.filter(a => a.type === "pick").sort((a,b)=>b.value-a.value);
+
+  const normalPool = [...players.slice(0,18), ...picks.slice(0,10)];
+  const out = combinations(normalPool, maxSize);
+
+  if ($("allowPicks").checked && picks.length) {
+    // Explicitly add player + pick and player + two-pick structures.
+    for (const player of players.slice(0,16)) {
+      for (const pick of picks.slice(0,8)) {
+        out.push([player, pick]);
+      }
+    }
+
+    if (maxSize >= 3) {
+      for (const player of players.slice(0,12)) {
+        for (let i = 0; i < Math.min(7, picks.length); i++) {
+          for (let j = i + 1; j < Math.min(7, picks.length); j++) {
+            out.push([player, picks[i], picks[j]]);
+          }
+        }
+      }
+    }
+
+    // Picks-only offers are useful for rebuilders and expensive targets.
+    for (let i = 0; i < Math.min(9, picks.length); i++) {
+      for (let j = i + 1; j < Math.min(9, picks.length); j++) {
+        out.push([picks[i], picks[j]]);
+      }
+    }
+
+    if (maxSize >= 3) {
+      for (let i = 0; i < Math.min(7, picks.length); i++) {
+        for (let j = i + 1; j < Math.min(7, picks.length); j++) {
+          for (let k = j + 1; k < Math.min(7, picks.length); k++) {
+            out.push([picks[i], picks[j], picks[k]]);
+          }
+        }
+      }
+    }
+  }
+
+  const seen = new Set();
+  return out.filter(pkg => {
+    const key = pkg.map(assetLabel).sort().join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+
+    if (!targetValue) return true;
+    const raw = packageRaw(pkg);
+    return raw >= targetValue * .35 && raw <= targetValue * 1.75;
+  });
+}
+
+
+function satisfiesMustReceive(result) {
+  const required = requiredReceiveAsset();
+  if (!required) return true;
+  return result.receive.some(a => {
+    if (required.type !== a.type) return false;
+    if (a.type === "player") return String(a.id) === String(required.id);
+    return a.season === required.season &&
+           a.round === required.round &&
+           a.originalRosterId === required.originalRosterId;
+  });
+}
+
+function diversifyResults(results, limit = 10) {
+  const sorted = dedupeResults(results)
+    .filter(satisfiesMustReceive)
+    .sort((a,b)=>b.score-a.score);
+  if (!$("allowPicks").checked) return sorted.slice(0, limit);
+
+  const targetShare = pickTargetShare();
+  const desiredPickCount = Math.round(limit * targetShare);
+
+  const withPicks = sorted.filter(r => packageHasPick(r.send) || packageHasPick(r.receive));
+  const withoutPicks = sorted.filter(r => !packageHasPick(r.send) && !packageHasPick(r.receive));
+
+  const chosen = [
+    ...withPicks.slice(0, desiredPickCount),
+    ...withoutPicks.slice(0, Math.max(0, limit - Math.min(desiredPickCount, withPicks.length)))
+  ];
+
+  const chosenKeys = new Set(chosen.map(r =>
+    [...r.send.map(assetLabel).sort(), "=>", ...r.receive.map(assetLabel).sort()].join("|")
+  ));
+
+  for (const r of sorted) {
+    if (chosen.length >= limit) break;
+    const key = [...r.send.map(assetLabel).sort(), "=>", ...r.receive.map(assetLabel).sort()].join("|");
+    if (!chosenKeys.has(key)) {
+      chosen.push(r);
+      chosenKeys.add(key);
+    }
+  }
+
+  return chosen.sort((a,b)=>b.score-a.score).slice(0, limit);
 }
 
 function packageValue(pkg, rosterId) {
@@ -361,7 +720,37 @@ function proposalScore(sendPkg, receivePkg, otherRosterId) {
   const benefit = Math.min(1.2, myRatio);
   const overpayPenalty = mySend > myReceive * 1.18 ? (mySend/myReceive - 1.18) * 1.2 : 0;
 
-  return 100 * (fairness*.36 + accept*.34 + benefit*.30 - overpayPenalty);
+  let structureBonus = 0;
+
+  // Two-sided fit: reward packages that address needs for both managers.
+  const theirNeeds = assessNeeds(otherRosterId);
+  const ourNeeds = assessNeeds(state.currentRosterId);
+  const theirFit = sendPkg
+    .filter(a => a.type === "player")
+    .reduce((s,a)=>s+(theirNeeds[a.position] || 0), 0) / Math.max(1, sendPkg.length);
+  const ourFit = receivePkg
+    .filter(a => a.type === "player")
+    .reduce((s,a)=>s+(ourNeeds[a.position] || 0), 0) / Math.max(1, receivePkg.length);
+  structureBonus += Math.min(.04, (theirFit + ourFit) * .02);
+
+  // Historical manager preference: small nudge only, never enough to rescue a bad trade.
+  const pref = managerPreference(otherRosterId);
+  const theyReceivePicks = sendPkg.some(a=>a.type==="pick");
+  const theyReceiveYouth = sendPkg.some(a=>a.type==="player" && a.age != null && a.age <= 24);
+  const theyReceiveVeterans = sendPkg.some(a=>a.type==="player" && a.age != null && a.age >= 28);
+  if (pref === "picks" && theyReceivePicks) structureBonus += .025;
+  if (pref === "youth" && theyReceiveYouth) structureBonus += .02;
+  if (pref === "veterans" && theyReceiveVeterans) structureBonus += .02;
+
+  if ($("allowPicks").checked) {
+    const mix = $("pickMix")?.value || "balanced";
+    const hasPick = packageHasPick(sendPkg) || packageHasPick(receivePkg);
+    if (hasPick && mix === "active") structureBonus = .035;
+    else if (hasPick && mix === "balanced") structureBonus = .015;
+    else if (hasPick && mix === "players") structureBonus = -.01;
+  }
+
+  return 100 * (fairness*.36 + accept*.34 + benefit*.30 - overpayPenalty + structureBonus);
 }
 
 function explainProposal(sendPkg, receivePkg, otherRosterId) {
@@ -373,15 +762,18 @@ function explainProposal(sendPkg, receivePkg, otherRosterId) {
   const outgoingPlayers = sendPkg.filter(a=>a.type==="player");
   const bestIncoming = incomingPlayers.sort((a,b)=>b.value-a.value)[0];
 
+  const incomingPicks = receivePkg.filter(a=>a.type==="pick");
+  const outgoingPicks = sendPkg.filter(a=>a.type==="pick");
+
   let whyUs = bestIncoming
-    ? `${bestIncoming.name} addresses a ${bestIncoming.position} need (${Math.round((ourNeeds[bestIncoming.position]||.4)*100)}% need score).`
-    : `The return improves your future flexibility with draft capital.`;
+    ? `${bestIncoming.name} addresses a ${bestIncoming.position} need (${Math.round((ourNeeds[bestIncoming.position]||.4)*100)}% need score).${incomingPicks.length ? ` You also add ${incomingPicks.length} future pick${incomingPicks.length === 1 ? "" : "s"} to the return.` : ""}`
+    : `The return improves your future flexibility with ${incomingPicks.length || "additional"} draft-pick asset${incomingPicks.length === 1 ? "" : "s"}.`;
 
   const helpfulOut = outgoingPlayers
     .slice()
     .sort((a,b)=>(theirNeeds[b.position]||0)-(theirNeeds[a.position]||0))[0];
   let whyThem = helpfulOut
-    ? `${ownerName(other)} is comparatively thinner at ${helpfulOut.position}, so ${helpfulOut.name} fits their roster construction.`
+    ? `${ownerName(other)} is comparatively thinner at ${helpfulOut.position}, so ${helpfulOut.name} fits their roster construction.${outgoingPicks.length ? ` The added pick${outgoingPicks.length === 1 ? "" : "s"} help bridge the remaining value gap.` : ""}`
     : `The package gives ${ownerName(other)} additional market value and flexibility.`;
 
   return { whyUs, whyThem };
@@ -396,19 +788,23 @@ function findPackagesForTarget(target) {
 
   const targetVal = adjustedValue(targetAsset, ownerId);
   const candidates = myAssets
-    .filter(a => a.value >= targetVal*.12 && a.value <= targetVal*1.35)
-    .slice(0,24);
-  const pkgs = combinations(candidates, 3);
+    .filter(a => {
+      if (a.type === "pick") return a.value >= targetVal * .04 && a.value <= targetVal * 1.35;
+      return a.value >= targetVal * .10 && a.value <= targetVal * 1.35;
+    })
+    .slice(0,30);
+
+  const pkgs = creativeCombinations(candidates, complexityLimit(), targetVal);
 
   const results = [];
   for (const send of pkgs) {
     const theirReceive = packageValue(send, ownerId);
-    if (theirReceive < targetVal*.86 || theirReceive > targetVal*1.22) continue;
+    if (theirReceive < targetVal*.84 || theirReceive > targetVal*1.24) continue;
     const score = proposalScore(send, [targetAsset], ownerId);
     if (!Number.isFinite(score)) continue;
     results.push(makeResult(send, [targetAsset], ownerId, score));
   }
-  return dedupeResults(results).sort((a,b)=>b.score-a.score).slice(0,8);
+  return diversifyResults(results, 10);
 }
 
 function makeResult(send, receive, otherRosterId, score) {
@@ -447,48 +843,95 @@ function positionTargets(position, tier) {
 function findPositionTrades(position, tier) {
   const targets = positionTargets(position, tier);
   const results = targets.flatMap(t => findPackagesForTarget(t).slice(0,2));
-  return dedupeResults(results).sort((a,b)=>b.score-a.score).slice(0,10);
+  return diversifyResults(results, 10);
 }
 
 function bestUpgradeTrades() {
   const needs = assessNeeds(state.currentRosterId);
   const positions = Object.entries(needs).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([p])=>p);
   const results = positions.flatMap(pos => findPositionTrades(pos, "starter"));
-  return dedupeResults(results).sort((a,b)=>b.score-a.score).slice(0,10);
+  return diversifyResults(results, 10);
 }
 
-function findShopTrades(asset) {
+
+function selectedShopAssets() {
+  return [...document.querySelectorAll(".shop-player-check:checked")]
+    .map(el => {
+      const p = getPlayer(el.value);
+      return {...p, type:"player"};
+    })
+    .filter(Boolean);
+}
+
+function optionalOutgoingPickPackages(baseOutgoing, otherRosterId) {
+  if (!$("allowPicks").checked) return [baseOutgoing];
+
+  const myPicks = state.picks
+    .filter(p => p.ownerRosterId === state.currentRosterId)
+    .sort((a,b)=>b.value-a.value)
+    .slice(0,8);
+
+  const packages = [baseOutgoing];
+
+  // Selected players always remain in the deal. Picks may be added as sweeteners.
+  for (const pick of myPicks) {
+    packages.push([...baseOutgoing, pick]);
+  }
+
+  // For large bundles, avoid absurd 4+ asset outgoing offers.
+  if (baseOutgoing.length + 2 <= complexityLimit()) {
+    for (let i = 0; i < Math.min(5, myPicks.length); i++) {
+      for (let j = i + 1; j < Math.min(5, myPicks.length); j++) {
+        packages.push([...baseOutgoing, myPicks[i], myPicks[j]]);
+      }
+    }
+  }
+
+  return packages;
+}
+
+function findShopTrades(outgoingPlayers) {
   const results = [];
+  if (!outgoingPlayers.length) return results;
+
   for (const roster of state.rosters) {
     const rid = Number(roster.roster_id);
     if (rid === state.currentRosterId) continue;
 
-    const pool = otherTradeableAssets(rid).sort((a,b)=>b.value-a.value).slice(0,22);
-    const pkgs = combinations(pool, 2);
-    const outgoing = [asset];
-    const target = packageValue(outgoing, rid);
+    const baseTarget = packageValue(outgoingPlayers, rid);
 
-    for (const receive of pkgs) {
-      const theirGive = packageValue(receive, rid);
-      if (target < theirGive*.82 || target > theirGive*1.25) continue;
-      const score = proposalScore(outgoing, receive, rid);
-      if (!Number.isFinite(score)) continue;
-      results.push(makeResult(outgoing, receive, rid, score));
+    // Include more picks than the old engine and allow 3-asset returns.
+    const pool = otherTradeableAssets(rid)
+      .sort((a,b)=>b.value-a.value)
+      .filter(a => {
+        if (a.type === "pick") return a.value >= baseTarget * .035;
+        return a.value >= baseTarget * .08;
+      })
+      .slice(0,30);
+
+    const incomingPkgs = creativeCombinations(pool, complexityLimit(), baseTarget);
+    const outgoingPkgs = optionalOutgoingPickPackages(outgoingPlayers, rid);
+
+    for (const outgoing of outgoingPkgs) {
+      const theirReceive = packageValue(outgoing, rid);
+
+      for (const receive of incomingPkgs) {
+        const theirGive = packageValue(receive, rid);
+
+        if (theirReceive < theirGive * .82 || theirReceive > theirGive * 1.24) continue;
+
+        // Avoid pick-for-pick noise unless a selected player is part of the core deal.
+        if (!outgoingPlayers.length) continue;
+
+        const score = proposalScore(outgoing, receive, rid);
+        if (!Number.isFinite(score)) continue;
+
+        results.push(makeResult(outgoing, receive, rid, score));
+      }
     }
   }
-  return dedupeResults(results).sort((a,b)=>b.score-a.score).slice(0,10);
-}
 
-function selectedShopAsset() {
-  const raw = $("shopAsset").value;
-  if (!raw) return null;
-  const [kind,id] = raw.split(":");
-  if (kind === "player") {
-    const p = getPlayer(id);
-    return {...p, type:"player"};
-  }
-  if (kind === "pick") return state.picks[Number(id)] || null;
-  return null;
+  return diversifyResults(results, 12);
 }
 
 function runSearch() {
@@ -502,9 +945,9 @@ function runSearch() {
   } else if (mode === "position") {
     results = findPositionTrades($("targetPosition").value, $("targetTier").value);
   } else if (mode === "shop") {
-    const asset = selectedShopAsset();
-    if (!asset) return renderResults([], "Choose an asset to shop first.");
-    results = findShopTrades(asset);
+    const assets = selectedShopAssets();
+    if (!assets.length) return renderResults([], "Select at least one player you want to move.");
+    results = findShopTrades(assets);
   } else {
     results = bestUpgradeTrades();
   }
@@ -539,11 +982,11 @@ function renderResults(results, emptyMessage = "") {
         <div class="trade-body">
           <div class="side">
             <h4>YOU RECEIVE</h4>
-            ${r.receive.map(a=>`<div class="asset"><span class="asset-name">${escapeHtml(assetLabel(a))}</span><span class="asset-value">${fmtValue(a.value)}</span></div>`).join("")}
+            ${r.receive.map(a=>`<div class="asset"><span class="asset-name">${escapeHtml(assetLabel(a))}${a.type === "pick" ? '<span class="pick-tag">PICK</span>' : ''}</span><span class="asset-value">${fmtValue(a.value)}</span></div>`).join("")}
           </div>
           <div class="side">
             <h4>YOU SEND</h4>
-            ${r.send.map(a=>`<div class="asset"><span class="asset-name">${escapeHtml(assetLabel(a))}</span><span class="asset-value">${fmtValue(a.value)}</span></div>`).join("")}
+            ${r.send.map(a=>`<div class="asset"><span class="asset-name">${escapeHtml(assetLabel(a))}${a.type === "pick" ? '<span class="pick-tag">PICK</span>' : ''}</span><span class="asset-value">${fmtValue(a.value)}</span></div>`).join("")}
           </div>
         </div>
         <div class="trade-foot">
@@ -577,5 +1020,6 @@ $("myTeam").addEventListener("change", refreshTeamContext);
 $("targetPlayerSearch").addEventListener("input", e => populateTargetPlayers(e.target.value));
 document.querySelectorAll('input[name="mode"]').forEach(el => el.addEventListener("change", updateModeUI));
 $("findTrades").addEventListener("click", runSearch);
+$("allowPicks").addEventListener("change", populateMustReceive);
 
 updateModeUI();
