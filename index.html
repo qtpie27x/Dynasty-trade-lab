@@ -59,7 +59,7 @@
           <div class="mode-grid">
             <label class="mode-card"><input type="radio" name="mode" value="player" checked><span>Target player</span><small>Build offers for one player</small></label>
             <label class="mode-card"><input type="radio" name="mode" value="position"><span>Target position</span><small>Find available upgrades</small></label>
-            <label class="mode-card"><input type="radio" name="mode" value="shop"><span>Shop an asset</span><small>See realistic returns</small></label>
+            <label class="mode-card"><input type="radio" name="mode" value="shop"><span>Move my players</span><small>Bundle one or more players</small></label>
             <label class="mode-card"><input type="radio" name="mode" value="improve"><span>Improve my team</span><small>Let the model find a need</small></label>
           </div>
         </fieldset>
@@ -87,14 +87,23 @@
         </div>
 
         <div id="shopFields" class="hidden">
-          <label for="shopAsset">Asset to shop</label>
-          <select id="shopAsset"></select>
+          <label>Players I want to move</label>
+          <p class="field-help">Select one or more. Every selected player will be included in each suggested trade.</p>
+          <div id="shopAssetList" class="asset-checklist" role="group" aria-label="Players to move"></div>
+          <div id="selectedAssetSummary" class="selection-summary">No players selected</div>
         </div>
 
         <div class="toggle-row">
           <label><input type="checkbox" id="allowPicks" checked> Include draft picks</label>
           <label><input type="checkbox" id="protectElite" checked> Protect my elite players</label>
         </div>
+
+        <label for="pickMix">Draft-pick mix</label>
+        <select id="pickMix">
+          <option value="balanced" selected>Balanced — use picks naturally</option>
+          <option value="active">More pick-friendly ideas</option>
+          <option value="players">Prefer player-for-player deals</option>
+        </select>
 
         <label for="strategy">My team strategy</label>
         <select id="strategy">
@@ -103,8 +112,41 @@
           <option value="rebuild">Rebuilding / youth</option>
         </select>
 
+        <label for="tradeStyle">Trade style</label>
+        <select id="tradeStyle">
+          <option value="balanced" selected>Balanced</option>
+          <option value="tierup">Tier up — consolidate for stars</option>
+          <option value="tierdown">Tier down — add depth/value</option>
+          <option value="winnow">Win now — favor productive veterans</option>
+          <option value="retool">Rebuild — favor youth and picks</option>
+        </select>
+
+        <label for="complexity">Trade complexity</label>
+        <select id="complexity">
+          <option value="simple">Simple — 1–2 assets per side</option>
+          <option value="normal" selected>Normal — up to 3 assets per side</option>
+          <option value="blockbuster">Blockbuster — up to 4 assets per side</option>
+        </select>
+
+        <label>Untouchable players</label>
+        <p class="field-help">These players will never be added to an outgoing offer unless you explicitly selected them in Move my players.</p>
+        <div id="untouchableList" class="asset-checklist compact-list" role="group" aria-label="Untouchable players"></div>
+
+        <label for="mustReceive">Must receive</label>
+        <select id="mustReceive">
+          <option value="">No required return asset</option>
+        </select>
+
+        <label for="pickQuality">Rookie-pick quality assumption</label>
+        <select id="pickQuality">
+          <option value="auto" selected>Auto by team strength</option>
+          <option value="early">Assume early picks</option>
+          <option value="mid">Assume mid picks</option>
+          <option value="late">Assume late picks</option>
+        </select>
+
         <button id="findTrades" class="primary wide" type="button">Find trade ideas</button>
-        <p class="fineprint">V1 uses live FantasyCalc market values plus league-aware adjustments. Treat proposals as starting points, not guaranteed accepts.</p>
+        <p class="fineprint">V1.3 adds multi-player bundles, untouchables, must-receive assets, trade styles, pick-quality estimates, historical manager tendencies, two-sided roster fit, and deliberate draft-pick balancing. Treat proposals as starting points, not guaranteed accepts.</p>
       </aside>
 
       <section class="results-column">
@@ -118,6 +160,19 @@
           </div>
           <div id="needChips" class="chips"></div>
           <div id="rosterGrid" class="roster-grid"></div>
+        </div>
+
+        <div class="panel tendencies-panel">
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">LEAGUE MARKET</span>
+              <h2>Manager tendencies</h2>
+            </div>
+            <span id="historyStatus" class="muted">Loads after import</span>
+          </div>
+          <div id="managerTendencies" class="tendency-grid">
+            <div class="muted">Historical trade tendencies will appear here after you import your league.</div>
+          </div>
         </div>
 
         <div class="panel results-panel">
@@ -140,7 +195,7 @@
   </main>
 
   <footer>
-    <p>Data: Sleeper API + FantasyCalc market values. This project is not affiliated with Sleeper or FantasyCalc.</p>
+    <p>Data: Sleeper + multi-source dynasty market values. This project is not affiliated with the underlying data providers.</p>
   </footer>
 
   <script src="/app.js"></script>
