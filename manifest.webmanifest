@@ -1,0 +1,9 @@
+{
+  "name": "Dynasty Trade Lab",
+  "short_name": "Trade Lab",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1220",
+  "theme_color": "#111827",
+  "description": "Sleeper dynasty trade ideas and league-aware trade finder."
+}

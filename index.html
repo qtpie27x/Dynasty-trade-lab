@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#111827" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Trade Lab" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <title>Dynasty Trade Lab</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">DTL</div>
+      <div>
+        <h1>Dynasty Trade Lab</h1>
+        <p>League-aware trade ideas for Sleeper dynasty leagues</p>
+      </div>
+    </div>
+    <div class="status-pill" id="dataStatus">Not connected</div>
+  </header>
+
+  <main class="layout">
+    <section class="panel import-panel">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">STEP 1</span>
+          <h2>Import your Sleeper league</h2>
+        </div>
+      </div>
+
+      <form id="leagueForm" class="league-form">
+        <label for="leagueId">Sleeper league ID</label>
+        <div class="input-row">
+          <input id="leagueId" name="leagueId" inputmode="numeric" autocomplete="off"
+                 placeholder="e.g. 1234567890123456789" required />
+          <button id="importButton" class="primary" type="submit">Import league</button>
+        </div>
+        <p class="hint">Your league ID is the long number in your Sleeper league URL. No login or password is needed.</p>
+        <p id="importMessage" class="message" role="status" aria-live="polite"></p>
+      </form>
+
+      <div id="leagueSummary" class="league-summary hidden"></div>
+    </section>
+
+    <section id="workspace" class="workspace hidden">
+      <aside class="panel controls">
+        <span class="eyebrow">STEP 2</span>
+        <h2>Build a trade search</h2>
+
+        <label for="myTeam">Your team</label>
+        <select id="myTeam"></select>
+
+        <fieldset>
+          <legend>What do you want to do?</legend>
+          <div class="mode-grid">
+            <label class="mode-card"><input type="radio" name="mode" value="player" checked><span>Target player</span><small>Build offers for one player</small></label>
+            <label class="mode-card"><input type="radio" name="mode" value="position"><span>Target position</span><small>Find available upgrades</small></label>
+            <label class="mode-card"><input type="radio" name="mode" value="shop"><span>Shop an asset</span><small>See realistic returns</small></label>
+            <label class="mode-card"><input type="radio" name="mode" value="improve"><span>Improve my team</span><small>Let the model find a need</small></label>
+          </div>
+        </fieldset>
+
+        <div id="playerTargetFields">
+          <label for="targetPlayer">Target player</label>
+          <input id="targetPlayerSearch" placeholder="Start typing a player name…" autocomplete="off" />
+          <select id="targetPlayer" size="5" class="search-results"></select>
+        </div>
+
+        <div id="positionTargetFields" class="hidden">
+          <label for="targetPosition">Position</label>
+          <select id="targetPosition">
+            <option value="QB">QB</option>
+            <option value="RB">RB</option>
+            <option value="WR" selected>WR</option>
+            <option value="TE">TE</option>
+          </select>
+          <label for="targetTier">Target quality</label>
+          <select id="targetTier">
+            <option value="elite">Elite / cornerstone</option>
+            <option value="starter" selected>Strong starter</option>
+            <option value="depth">Depth / upside</option>
+          </select>
+        </div>
+
+        <div id="shopFields" class="hidden">
+          <label for="shopAsset">Asset to shop</label>
+          <select id="shopAsset"></select>
+        </div>
+
+        <div class="toggle-row">
+          <label><input type="checkbox" id="allowPicks" checked> Include draft picks</label>
+          <label><input type="checkbox" id="protectElite" checked> Protect my elite players</label>
+        </div>
+
+        <label for="strategy">My team strategy</label>
+        <select id="strategy">
+          <option value="balanced">Balanced</option>
+          <option value="contender">Contending now</option>
+          <option value="rebuild">Rebuilding / youth</option>
+        </select>
+
+        <button id="findTrades" class="primary wide" type="button">Find trade ideas</button>
+        <p class="fineprint">V1 uses live FantasyCalc market values plus league-aware adjustments. Treat proposals as starting points, not guaranteed accepts.</p>
+      </aside>
+
+      <section class="results-column">
+        <div class="panel team-overview">
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">YOUR ROSTER</span>
+              <h2 id="teamNameHeading">Team</h2>
+            </div>
+            <div id="teamBadge" class="team-badge"></div>
+          </div>
+          <div id="needChips" class="chips"></div>
+          <div id="rosterGrid" class="roster-grid"></div>
+        </div>
+
+        <div class="panel results-panel">
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">TRADE FINDER</span>
+              <h2>Suggested offers</h2>
+            </div>
+            <span id="resultCount" class="muted"></span>
+          </div>
+          <div id="resultsEmpty" class="empty-state">
+            <div class="empty-icon">⇄</div>
+            <h3>Import your league and run a search</h3>
+            <p>We’ll rank proposals by market-value balance, roster fit, team need, and how painful the outgoing package is for you.</p>
+          </div>
+          <div id="tradeResults" class="trade-results"></div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <footer>
+    <p>Data: Sleeper API + FantasyCalc market values. This project is not affiliated with Sleeper or FantasyCalc.</p>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
